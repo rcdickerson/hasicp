@@ -25,8 +25,8 @@ instance Show Expression where
     show (If _ _ _) = "<if-statement>"
     show (Begin _) = "<begin>"
     show (Cond _) = "<conditional>"
-    show (PrimitiveProcedure _) = "<primitive proc>"
-    show (ComplexProcedure _ _ _) = "<complex proc>"
+    show (PrimitiveProcedure _) = "<primitive procedure>"
+    show (ComplexProcedure _ _ _) = "<complex procedure>"
     show (Application _ _) = "<application>"
 
 data PrimitiveValue = PrimNum Double
@@ -42,52 +42,54 @@ instance Show PrimitiveValue where
 type VarName = String
 type Symbol = String
 
-eval :: Expression -> Environment -> Expression
-eval (SelfEvaluating val) _ = (SelfEvaluating val)
-eval (Variable name) env = lookupBinding name env
-eval (Quoted name) _ = SelfEvaluating (PrimString name)
+type Evaluation = (Expression, Environment)
+
+eval :: Expression -> Environment -> Evaluation
+eval (SelfEvaluating val) env = (SelfEvaluating val, env)
+eval (Variable name) env = (lookupBinding name env, env)
+eval (Quoted name) env = (Quoted name, env)
 --eval (Assignment var val) = evalAssignment var val
---eval (Definition var val) env = evalDefinition var val env
+eval (Definition var val) env = evalDefinition var val env
 eval (If cond consq alt) env = evalIf cond consq alt env
+--eval (Lambda exp) env =
 eval (Begin exps) env = evalSequence exps env
 --eval (Cond conds) = eval (condsToIf conds)
-eval (Application operator operands) env = apply operator vals
-    where
-      vals = (listOfValues operands env)
+eval (Application operator operands) env = apply operator vals env
+    where vals = map (fst.(evalInEnv env)) operands
 eval _ _ = error "Unknown expression type -- EVAL"
 
-evalInEnv :: Environment -> (Expression -> Expression)
+evalInEnv :: Environment -> Expression -> (Expression, Environment)
 evalInEnv = flip eval
 
-apply :: Expression -> [Expression] -> Expression
-apply (PrimitiveProcedure p) argExps = SelfEvaluating (p args)
+apply :: Expression -> [Expression] -> Environment -> Evaluation
+apply (PrimitiveProcedure p) argExps env = (SelfEvaluating (p args), env)
     where 
       args = map toPrimVal argExps
       toPrimVal (SelfEvaluating val) = val
-apply (ComplexProcedure params proc env) args = evalSequence proc newEnv
+apply (ComplexProcedure params proc env) args _ = evalSequence proc newEnv
     where
       newEnv = extendEnvironment (zip params args) env
 
-listOfValues :: [Expression] -> Environment -> [Expression]
-listOfValues exps env = map (evalInEnv env) exps
-
-evalIf :: Expression -> Expression -> Expression -> Environment -> Expression
-evalIf cond consq alt env = if (expToBool.(evalInEnv env) $ cond)
+evalIf :: Expression -> Expression -> Expression -> Environment -> Evaluation
+evalIf cond consq alt env = if (expToBool.(fst.(evalInEnv env)) $ cond)
                                 then (eval consq env)
                                 else (eval alt env)
-    where
-      expToBool (SelfEvaluating (PrimBool tOrF)) = tOrF
+    where expToBool (SelfEvaluating (PrimBool tOrF)) = tOrF
 
-evalSequence :: [Expression] -> Environment -> Expression
-evalSequence [] _ = Quoted "ok"
+evalSequence :: [Expression] -> Environment -> Evaluation
+evalSequence [] env = (Quoted "ok", env)
 evalSequence (exp:[]) env = eval exp env
-evalSequence (exp:exps) env = evalSequence exps env -- todo: fix
+evalSequence (exp:exps) env = evalSequence exps newEnv
+    where (_, newEnv) = eval exp env
 
 --evalAssignment :: VarName -> Expression -> Environment -> Expression
 --evalAssignment var exp env = setVariableValue var (eval exp env) env
 
---evalDefinition :: VarName -> Expression -> Environment -> Expression
---evalDefinition var exp env = defineVariable var (expToBindable (eval exp env)) env
+evalDefinition :: VarName -> Expression -> Environment -> Evaluation
+evalDefinition var exp env = (Quoted message, defineVariable var value newEnv)
+    where 
+      (value, newEnv) = eval exp env
+      message =  "defined: " ++ var ++ " = " ++ (show value)
 
 
 -- Environment --
@@ -136,37 +138,38 @@ globalEnvironment = extendEnvironment globalBindings emptyEnvironment
 
 -- REPL --
 
-repl :: IO ()
-repl = do
+repl :: IO()
+repl = acceptInput globalEnvironment
+
+acceptInput :: Environment -> IO ()
+acceptInput env = do
   putStr "> "
   input <- getLine
   if (input == "quit")
      then return ()
-     else handleInput input
+     else handleInput input env
 
-handleInput :: String -> IO ()
-handleInput input = do
+handleInput :: String -> Environment -> IO()
+handleInput input env = do
 
   let parsedExp = buildExpression $ SP.parseSexp input
-  let evaledExp = eval parsedExp globalEnvironment
+  let (evaledExp, newEnv) = eval parsedExp env
   let valueToShow = show evaledExp
 
-  putStrLn $ valueToShow
-  repl
+  putStrLn valueToShow  
+  acceptInput newEnv
 
 buildExpression :: SP.SchemeVal -> Expression
-buildExpression (SP.SchemeAtom var) = 
-    lookupBinding var globalEnvironment
-buildExpression (SP.SchemeNumber num) = 
-    SelfEvaluating $ PrimNum num
-buildExpression (SP.SchemeBool bool) =
-    SelfEvaluating $ PrimBool bool
-buildExpression (SP.SchemeString str) =
-    SelfEvaluating $ PrimString str
+buildExpression (SP.SchemeAtom var)   = Variable var
+buildExpression (SP.SchemeNumber num) = SelfEvaluating $ PrimNum num
+buildExpression (SP.SchemeBool bool)  = SelfEvaluating $ PrimBool bool
+buildExpression (SP.SchemeString str) = SelfEvaluating $ PrimString str
 buildExpression (SP.SchemeList ((SchemeAtom op):params)) = 
     case op of
       "if" -> If cond consq alt 
           where (cond:consq:alt:[]) = map buildExpression params
       "begin" -> Begin $ map buildExpression params
+      "define" -> Definition var val
+          where ((Variable var):val:[]) = map buildExpression params
       otherwise -> Application proc (map buildExpression params)
           where proc = lookupBinding op globalEnvironment
