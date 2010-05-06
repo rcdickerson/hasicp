@@ -10,6 +10,7 @@ data Expression = SelfEvaluating PrimitiveValue
                 | Assignment VarName Expression
                 | Definition VarName Expression
                 | If Expression Expression Expression
+                | Lambda [VarName] [Expression]
                 | Begin [Expression]
                 | Cond [(Expression, Expression)]
                 | PrimitiveProcedure ([PrimitiveValue] -> PrimitiveValue)
@@ -23,10 +24,11 @@ instance Show Expression where
     show (Assignment name exp) = "Assignment: " ++ name ++ (show exp)
     show (Definition name exp) = "Definition: " ++ name ++ (show exp)
     show (If _ _ _) = "<if-statement>"
+    show (Lambda _ _) = "<lambda>"
     show (Begin _) = "<begin>"
     show (Cond _) = "<conditional>"
     show (PrimitiveProcedure _) = "<primitive procedure>"
-    show (ComplexProcedure _ _ _) = "<complex procedure>"
+    show (ComplexProcedure n exp env) = "<complex procedure>"
     show (Application _ _) = "<application>"
 
 data PrimitiveValue = PrimNum Double
@@ -51,14 +53,14 @@ eval (Quoted name) env = (Quoted name, env)
 --eval (Assignment var val) = evalAssignment var val
 eval (Definition var val) env = evalDefinition var val env
 eval (If cond consq alt) env = evalIf cond consq alt env
---eval (Lambda exp) env =
+eval (Lambda params body) env = (ComplexProcedure params body env, env)
 eval (Begin exps) env = evalSequence exps env
 --eval (Cond conds) = eval (condsToIf conds)
 eval (Application operator operands) env = apply operator vals env
     where vals = map (fst.(evalInEnv env)) operands
 eval _ _ = error "Unknown expression type -- EVAL"
 
-evalInEnv :: Environment -> Expression -> (Expression, Environment)
+evalInEnv :: Environment -> Expression -> Evaluation
 evalInEnv = flip eval
 
 apply :: Expression -> [Expression] -> Environment -> Evaluation
@@ -66,7 +68,7 @@ apply (PrimitiveProcedure p) argExps env = (SelfEvaluating (p args), env)
     where 
       args = map toPrimVal argExps
       toPrimVal (SelfEvaluating val) = val
-apply (ComplexProcedure params proc env) args _ = evalSequence proc newEnv
+apply (ComplexProcedure params proc _) args env = evalSequence proc newEnv
     where
       newEnv = extendEnvironment (zip params args) env
 
@@ -120,17 +122,26 @@ plus ((PrimNum val1):(PrimNum val2):[]) = PrimNum (val1 + val2)
 minus :: [PrimitiveValue] -> PrimitiveValue
 minus ((PrimNum val1):(PrimNum val2):[]) = PrimNum (val1 - val2)
 
+divide :: [PrimitiveValue] -> PrimitiveValue
+divide ((PrimNum _):(PrimNum 0):[]) = error "Divide by zero."
+divide ((PrimNum val1):(PrimNum val2):[]) = PrimNum (val1 / val2)
+
 lt :: [PrimitiveValue] -> PrimitiveValue
 lt ((PrimNum val1):(PrimNum val2):[]) = PrimBool (val1 < val2)
 
 gt :: [PrimitiveValue] -> PrimitiveValue
 gt ((PrimNum val1):(PrimNum val2):[]) = PrimBool (val1 > val2)
 
+eq :: [PrimitiveValue] -> PrimitiveValue
+eq ((PrimNum val1):(PrimNum val2):[]) = PrimBool (val1 == val2)
+
 globalBindings :: [Binding]
 globalBindings = [("+", PrimitiveProcedure plus),
                   ("-", PrimitiveProcedure minus),
+                  ("/", PrimitiveProcedure divide),
                   ("<", PrimitiveProcedure lt),
-                  (">", PrimitiveProcedure gt)]
+                  (">", PrimitiveProcedure gt),
+                  ("=", PrimitiveProcedure eq)]
 
 globalEnvironment :: Environment
 globalEnvironment = extendEnvironment globalBindings emptyEnvironment
@@ -152,24 +163,29 @@ acceptInput env = do
 handleInput :: String -> Environment -> IO()
 handleInput input env = do
 
-  let parsedExp = buildExpression $ SP.parseSexp input
+  let parsedExp = buildExpression env (SP.parseSexp input)
   let (evaledExp, newEnv) = eval parsedExp env
   let valueToShow = show evaledExp
 
   putStrLn valueToShow  
   acceptInput newEnv
 
-buildExpression :: SP.SchemeVal -> Expression
-buildExpression (SP.SchemeAtom var)   = Variable var
-buildExpression (SP.SchemeNumber num) = SelfEvaluating $ PrimNum num
-buildExpression (SP.SchemeBool bool)  = SelfEvaluating $ PrimBool bool
-buildExpression (SP.SchemeString str) = SelfEvaluating $ PrimString str
-buildExpression (SP.SchemeList ((SchemeAtom op):params)) = 
+buildExpression :: Environment -> SP.SchemeVal -> Expression
+buildExpression _ (SP.SchemeAtom var)   = Variable var
+buildExpression _ (SP.SchemeNumber num) = SelfEvaluating $ PrimNum num
+buildExpression _ (SP.SchemeBool bool)  = SelfEvaluating $ PrimBool bool
+buildExpression _ (SP.SchemeString str) = SelfEvaluating $ PrimString str
+buildExpression env (SP.SchemeList ((SchemeAtom op):params)) = 
     case op of
       "if" -> If cond consq alt 
-          where (cond:consq:alt:[]) = map buildExpression params
-      "begin" -> Begin $ map buildExpression params
+          where (cond:consq:alt:[]) = map (buildExpression env) params
+      "begin" -> Begin $ map (buildExpression env) params
       "define" -> Definition var val
-          where ((Variable var):val:[]) = map buildExpression params
-      otherwise -> Application proc (map buildExpression params)
-          where proc = lookupBinding op globalEnvironment
+          where ((Variable var):val:[]) = map (buildExpression env) params
+      "lambda" -> Lambda paramNames (map (buildExpression env) body)
+          where
+            ((SP.SchemeList paramList):body) = params
+            extractVarName (SP.SchemeAtom var) = var
+            paramNames = map extractVarName (paramList)
+      otherwise -> Application proc (map (buildExpression env) params)
+          where proc = lookupBinding op env
