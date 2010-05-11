@@ -47,9 +47,9 @@ type Symbol = String
 type Evaluation = (Expression, Environment)
 
 eval :: Expression -> Environment -> Evaluation
-eval (SelfEvaluating val) env = (SelfEvaluating val, env)
+eval se@(SelfEvaluating val) env = (se, env)
 eval (Variable name) env = (lookupBinding name env, env)
-eval (Quoted name) env = (Quoted name, env)
+eval qu@(Quoted name) env = (qu, env)
 --eval (Assignment var val) = evalAssignment var val
 eval (Definition var val) env = evalDefinition var val env
 eval (If cond consq alt) env = evalIf cond consq alt env
