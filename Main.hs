@@ -1,8 +1,13 @@
 module Main
     where
 
+import Data.IORef
+
 import Data.Maybe as M
 import SchemeParser as SP
+import Control.Monad as CM
+
+type EnvRef = IORef Environment
 
 data Expression = SelfEvaluating PrimitiveValue
                 | Variable VarName
@@ -14,7 +19,7 @@ data Expression = SelfEvaluating PrimitiveValue
                 | Begin [Expression]
                 | Cond [(Expression, Expression)]
                 | PrimitiveProcedure ([PrimitiveValue] -> PrimitiveValue)
-                | ComplexProcedure [VarName] [Expression] Environment
+                | ComplexProcedure [VarName] [Expression] EnvRef
                 | Application Expression [Expression]
 
 instance Show Expression where
@@ -41,57 +46,62 @@ instance Show PrimitiveValue where
     show (PrimBool True) = "true"
     show (PrimBool False) = "false"
 
+expToBool (SelfEvaluating (PrimBool tOrF)) = tOrF
+
 type VarName = String
 type Symbol = String
 
-type Evaluation = (Expression, Environment)
-
-eval :: Expression -> Environment -> Evaluation
-eval se@(SelfEvaluating val) env = (se, env)
-eval (Variable name) env = (lookupBinding name env, env)
-eval qu@(Quoted name) env = (qu, env)
+eval :: Expression -> EnvRef -> IO Expression
+eval se@(SelfEvaluating val) _ = return se
+eval (Variable name) envRef = do
+    env <- readIORef envRef
+    return $ lookupBinding name env
+eval qu@(Quoted name) _ = return qu
 --eval (Assignment var val) = evalAssignment var val
-eval (Definition var val) env = evalDefinition var val env
-eval (If cond consq alt) env = evalIf cond consq alt env
-eval (Lambda params body) env = (ComplexProcedure params body env, env)
-eval (Begin exps) env = evalSequence exps env
+eval (Definition var val) envRef = evalDefinition var val envRef
+eval (If cond consq alt) envRef = evalIf cond consq alt envRef
+eval (Lambda params body) envRef = return $ ComplexProcedure params body envRef
+eval (Begin exps) envRef = evalSequence exps envRef
 --eval (Cond conds) = eval (condsToIf conds)
-eval (Application operator operands) env = apply operator vals env
-    where vals = map (fst.(evalInEnv env)) operands
+eval (Application operator operands) env = do
+    vals <- CM.mapM (evalInEnv env) operands
+    apply operator vals env
 eval _ _ = error "Unknown expression type -- EVAL"
 
-evalInEnv :: Environment -> Expression -> Evaluation
+evalInEnv :: EnvRef -> Expression -> IO Expression
 evalInEnv = flip eval
 
-apply :: Expression -> [Expression] -> Environment -> Evaluation
-apply (PrimitiveProcedure p) argExps env = (SelfEvaluating (p args), env)
+apply :: Expression -> [Expression] -> EnvRef -> IO Expression
+apply (PrimitiveProcedure p) argExps _ = return $ SelfEvaluating (p args)
     where 
       args = map toPrimVal argExps
       toPrimVal (SelfEvaluating val) = val
-apply (ComplexProcedure params proc _) args env = evalSequence proc newEnv
-    where
-      newEnv = extendEnvironment (zip params args) env
+apply (ComplexProcedure params proc envRef) args _ = do
+    env <- readIORef envRef
+    extEnv <- newIORef $ extendEnvironment (zip params args) env
+    evalSequence proc extEnv
 
-evalIf :: Expression -> Expression -> Expression -> Environment -> Evaluation
-evalIf cond consq alt env = if (expToBool.(fst.(evalInEnv env)) $ cond)
-                                then (eval consq env)
-                                else (eval alt env)
-    where expToBool (SelfEvaluating (PrimBool tOrF)) = tOrF
+evalIf :: Expression -> Expression -> Expression -> EnvRef -> IO Expression
+evalIf cond consq alt envRef = do
+    result <- eval cond envRef 
+    if (expToBool result)
+        then (eval consq envRef)
+        else (eval alt envRef)
 
-evalSequence :: [Expression] -> Environment -> Evaluation
-evalSequence [] env = (Quoted "ok", env)
-evalSequence (exp:[]) env = eval exp env
-evalSequence (exp:exps) env = evalSequence exps newEnv
-    where (_, newEnv) = eval exp env
+evalSequence :: [Expression] -> EnvRef -> IO Expression
+evalSequence [] _ = return $ Quoted "ok"
+evalSequence (exp:[]) envRef = eval exp envRef
+evalSequence (exp:exps) envRef = evalSequence exps envRef
 
 --evalAssignment :: VarName -> Expression -> Environment -> Expression
 --evalAssignment var exp env = setVariableValue var (eval exp env) env
 
-evalDefinition :: VarName -> Expression -> Environment -> Evaluation
-evalDefinition var exp env = (Quoted message, defineVariable var value newEnv)
-    where 
-      (value, newEnv) = eval exp env
-      message =  "defined: " ++ var ++ " = " ++ (show value)
+evalDefinition :: VarName -> Expression -> EnvRef -> IO Expression
+evalDefinition var exp envRef = do
+    value <- eval exp envRef
+    modifyIORef envRef (defineVariable var value)
+    let message = "defined: " ++ var ++ " = " ++ (show value)
+    return $ Quoted message
 
 
 -- Environment --
@@ -150,9 +160,11 @@ globalEnvironment = extendEnvironment globalBindings emptyEnvironment
 -- REPL --
 
 repl :: IO()
-repl = acceptInput globalEnvironment
+repl = do
+    globalEnvRef <- newIORef globalEnvironment
+    acceptInput globalEnvRef
 
-acceptInput :: Environment -> IO ()
+acceptInput :: EnvRef -> IO ()
 acceptInput env = do
   putStr "> "
   input <- getLine
@@ -160,15 +172,16 @@ acceptInput env = do
      then return ()
      else handleInput input env
 
-handleInput :: String -> Environment -> IO()
-handleInput input env = do
+handleInput :: String -> EnvRef -> IO()
+handleInput input envRef = do
+
+  env <- readIORef envRef
 
   let parsedExp = buildExpression env (SP.parseSexp input)
-  let (evaledExp, newEnv) = eval parsedExp env
-  let valueToShow = show evaledExp
+  evaledExp <- eval parsedExp envRef
 
-  putStrLn valueToShow  
-  acceptInput newEnv
+  putStrLn $ show evaledExp
+  acceptInput envRef
 
 buildExpression :: Environment -> SP.SchemeVal -> Expression
 buildExpression _ (SP.SchemeAtom var)   = Variable var
