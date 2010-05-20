@@ -57,7 +57,7 @@ eval (Variable name) envRef = do
     env <- readIORef envRef
     return $ lookupBinding name env
 eval qu@(Quoted name) _ = return qu
---eval (Assignment var val) = evalAssignment var val
+eval (Assignment var val) envRef = evalAssignment var val envRef
 eval (Definition var val) envRef = evalDefinition var val envRef
 eval (If cond consq alt) envRef = evalIf cond consq alt envRef
 eval (Lambda params body) envRef = return $ ComplexProcedure params body envRef
@@ -93,8 +93,12 @@ evalSequence [] _ = return $ Quoted "ok"
 evalSequence (exp:[]) envRef = eval exp envRef
 evalSequence (exp:exps) envRef = evalSequence exps envRef
 
---evalAssignment :: VarName -> Expression -> Environment -> Expression
---evalAssignment var exp env = setVariableValue var (eval exp env) env
+evalAssignment :: VarName -> Expression -> EnvRef -> IO Expression
+evalAssignment var exp envRef = do
+    value <- eval exp envRef
+    modifyIORef envRef (setVariable var value)
+    let message = "assigned: " ++ var ++ " = " ++ (show value)
+    return $ Quoted message
 
 evalDefinition :: VarName -> Expression -> EnvRef -> IO Expression
 evalDefinition var exp envRef = do
@@ -121,8 +125,22 @@ extendEnvironment = (:)
 defineVariable :: VarName -> Expression -> Environment -> Environment 
 defineVariable name val (f:fs) = ((name, val):f) : fs
 
---setVariableValue :: VarName -> Expression -> Environment -> Environment
---setVariableValue name val env =
+setVariable :: VarName -> Expression -> Environment -> Environment
+setVariable name val frames = setVariable' [] frames (name, val)
+  where
+    setVariable' _ [] (name, _) = error $ "Undefined: " ++ name
+    setVariable' pre (f:fs) binding = 
+        case modifyBinding f binding of
+            (Just newFrame) -> pre ++ (newFrame:fs)
+            _ -> setVariable' (pre ++ [f]) fs binding
+
+modifyBinding :: Frame -> Binding -> Maybe Frame
+modifyBinding = modifyBinding' []
+  where
+    modifyBinding' _ [] _ = Nothing
+    modifyBinding' pre (b@(bName, _):bs) binding@(name, value)
+                  | bName == name = Just $ pre ++ (binding : bs)
+                  | otherwise = modifyBinding' (pre ++ [b]) bs binding
 
 
 -- Global Environment --
@@ -194,6 +212,8 @@ buildExpression env (SP.SchemeList ((SchemeAtom op):params)) =
           where (cond:consq:alt:[]) = map (buildExpression env) params
       "begin" -> Begin $ map (buildExpression env) params
       "define" -> Definition var val
+          where ((Variable var):val:[]) = map (buildExpression env) params
+      "set!" -> Assignment var val
           where ((Variable var):val:[]) = map (buildExpression env) params
       "lambda" -> Lambda paramNames (map (buildExpression env) body)
           where
