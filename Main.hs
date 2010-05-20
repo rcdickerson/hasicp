@@ -60,7 +60,8 @@ eval qu@(Quoted name) _ = return qu
 eval (Assignment var val) envRef = evalAssignment var val envRef
 eval (Definition var val) envRef = evalDefinition var val envRef
 eval (If cond consq alt) envRef = evalIf cond consq alt envRef
-eval (Lambda params body) envRef = return $ ComplexProcedure params body envRef
+eval (Lambda params body) envRef = 
+    return $ ComplexProcedure params body envRef
 eval (Begin exps) envRef = evalSequence exps envRef
 --eval (Cond conds) = eval (condsToIf conds)
 eval (Application operator operands) env = do
@@ -144,32 +145,31 @@ modifyBinding = modifyBinding' []
 
 
 -- Global Environment --
-plus :: [PrimitiveValue] -> PrimitiveValue
-plus ((PrimNum val1):(PrimNum val2):[]) = PrimNum (val1 + val2)
+numBinop :: (Double -> Double -> Double) -> Expression
+numBinop op = PrimitiveProcedure proc
+    where proc ((PrimNum val1):(PrimNum val2):[]) = 
+              PrimNum $ op val1 val2
 
-minus :: [PrimitiveValue] -> PrimitiveValue
-minus ((PrimNum val1):(PrimNum val2):[]) = PrimNum (val1 - val2)
+numBoolBinop :: (Double -> Double -> Bool) -> Expression
+numBoolBinop op = PrimitiveProcedure proc
+    where proc ((PrimNum val1):(PrimNum val2):[]) = 
+              PrimBool $ op val1 val2
 
-divide :: [PrimitiveValue] -> PrimitiveValue
-divide ((PrimNum _):(PrimNum 0):[]) = error "Divide by zero."
-divide ((PrimNum val1):(PrimNum val2):[]) = PrimNum (val1 / val2)
-
-lt :: [PrimitiveValue] -> PrimitiveValue
-lt ((PrimNum val1):(PrimNum val2):[]) = PrimBool (val1 < val2)
-
-gt :: [PrimitiveValue] -> PrimitiveValue
-gt ((PrimNum val1):(PrimNum val2):[]) = PrimBool (val1 > val2)
-
-eq :: [PrimitiveValue] -> PrimitiveValue
-eq ((PrimNum val1):(PrimNum val2):[]) = PrimBool (val1 == val2)
+boolBinop :: (Bool -> Bool -> Bool) -> Expression
+boolBinop op = PrimitiveProcedure proc
+    where proc ((PrimBool val1):(PrimBool val2):[]) = 
+              PrimBool $ op val1 val2
 
 globalBindings :: [Binding]
-globalBindings = [("+", PrimitiveProcedure plus),
-                  ("-", PrimitiveProcedure minus),
-                  ("/", PrimitiveProcedure divide),
-                  ("<", PrimitiveProcedure lt),
-                  (">", PrimitiveProcedure gt),
-                  ("=", PrimitiveProcedure eq)]
+globalBindings = [("+", numBinop (+)),
+                  ("-", numBinop (-)),
+                  ("*", numBinop (*)),
+                  ("/", numBinop (/)),
+                  ("<", numBoolBinop (<)),
+                  (">", numBoolBinop (>)),
+                  ("=", numBoolBinop (==)),
+                  ("||", boolBinop (||)),
+                  ("&&", boolBinop (&&))]
 
 globalEnvironment :: Environment
 globalEnvironment = extendEnvironment globalBindings emptyEnvironment
