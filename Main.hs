@@ -6,6 +6,7 @@ import Data.IORef
 import Data.Maybe as M
 import SchemeParser as SP
 import Control.Monad as CM
+import Text.ParserCombinators.Parsec as P
 
 type EnvRef = IORef Environment
 
@@ -21,6 +22,7 @@ data Expression = SelfEvaluating PrimitiveValue
                 | PrimitiveProcedure ([PrimitiveValue] -> PrimitiveValue)
                 | ComplexProcedure [VarName] [Expression] EnvRef
                 | Application Expression [Expression]
+                | Error P.ParseError
 
 instance Show Expression where
     show (SelfEvaluating val) = show val
@@ -35,6 +37,7 @@ instance Show Expression where
     show (PrimitiveProcedure _) = "<primitive procedure>"
     show (ComplexProcedure n exp env) = "<complex procedure>"
     show (Application _ _) = "<application>"
+    show (Error parseError) = show parseError
 
 data PrimitiveValue = PrimNum Double
                     | PrimString String
@@ -67,6 +70,7 @@ eval (Begin exps) envRef = evalSequence exps envRef
 eval (Application operator operands) env = do
     vals <- CM.mapM (evalInEnv env) operands
     apply operator vals env
+eval (Error parseError) _ = return (Error parseError)
 eval _ _ = error "Unknown expression type -- EVAL"
 
 evalInEnv :: EnvRef -> Expression -> IO Expression
@@ -195,11 +199,15 @@ handleInput input envRef = do
 
   env <- readIORef envRef
 
-  let parsedExp = buildExpression env (SP.parseSexp input)
+  let parsedExp = maybeBuildExpression env (SP.parseSexp input)
   evaledExp <- eval parsedExp envRef
 
   putStrLn $ show evaledExp
   acceptInput envRef
+
+maybeBuildExpression :: Environment -> Either P.ParseError SP.SchemeVal -> Expression
+maybeBuildExpression _ (Left parseError) = Error parseError
+maybeBuildExpression env (Right schemeVal) = buildExpression env schemeVal
 
 buildExpression :: Environment -> SP.SchemeVal -> Expression
 buildExpression _ (SP.SchemeAtom var)   = Variable var

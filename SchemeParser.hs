@@ -14,11 +14,8 @@ data SchemeVal = SchemeAtom String
                | SchemeString String
   deriving Show
 
-parseSexp :: String -> SchemeVal
-parseSexp s = let 
-    result = parse expParser [] s
-  in case result of
-       (Right vals) -> vals
+parseSexp :: String -> Either ParseError SchemeVal
+parseSexp s = parse expParser [] s       
 
 symbol :: Parser Char
 symbol = oneOf "!$%&|*+-/:<=>?@^_~#"
